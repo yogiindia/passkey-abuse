@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passkey RP ID / Public Suffix Test</title>
+<style>
+  :root {
+    --bg:#ffffff; --fg:#1b1f24; --muted:#5b6570; --card:#f5f7fa; --border:#d6dbe1;
+    --pass:#137a3a; --pass-bg:#e0f5e8; --fail:#b3261e; --fail-bg:#fde7e5;
+    --warn:#8a5a00; --warn-bg:#fff2d6; --info:#2b5fa8; --info-bg:#e4eefb; --run:#555; --run-bg:#eceff3;
+    --accent:#2b5fa8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#14171b; --fg:#e6e9ed; --muted:#9aa4af; --card:#1d2227; --border:#333b44;
+      --pass:#6fdc95; --pass-bg:#173523; --fail:#ff8b82; --fail-bg:#3d1f1d;
+      --warn:#f2c15c; --warn-bg:#3a2e12; --info:#8db8f5; --info-bg:#1b2c45; --run:#bbb; --run-bg:#272d34;
+      --accent:#8db8f5;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px 16px 64px; background:var(--bg); color:var(--fg);
+         font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:1000px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  h2 { font-size:16px; margin:28px 0 8px; }
+  p, li { color:var(--muted); }
+  code { background:var(--card); border:1px solid var(--border); border-radius:4px; padding:1px 5px; font-size:13px; color:var(--fg); }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px 16px; }
+  dl { display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:0; font-size:14px; }
+  dt { color:var(--muted); } dd { margin:0; word-break:break-all; }
+  button { font:inherit; font-size:13px; padding:5px 12px; border-radius:6px; cursor:pointer;
+           border:1px solid var(--border); background:var(--bg); color:var(--fg); }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:var(--bg); border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; align-items:center; }
+  .table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:8px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { background:var(--card); font-weight:600; }
+  tr:last-child td { border-bottom:none; }
+  td.rp { font-family:ui-monospace,Menlo,Consolas,monospace; word-break:break-all; min-width:140px; }
+  .group td { background:var(--card); font-weight:600; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; }
+  .exp-reject { background:var(--fail-bg); color:var(--fail); }
+  .exp-allow { background:var(--pass-bg); color:var(--pass); }
+  .exp-info { background:var(--info-bg); color:var(--info); }
+  .res { min-width:150px; }
+  .res .st { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; margin-bottom:2px; }
+  .st.pass { background:var(--pass-bg); color:var(--pass); }
+  .st.fail { background:var(--fail-bg); color:var(--fail); }
+  .st.warn { background:var(--warn-bg); color:var(--warn); }
+  .st.info { background:var(--info-bg); color:var(--info); }
+  .st.running { background:var(--run-bg); color:var(--run); }
+  .res small { display:block; color:var(--muted); font-size:12px; word-break:break-word; }
+  .note { font-size:12px; color:var(--muted); display:block; margin-top:2px; font-family:system-ui,sans-serif; }
+  .row-actions { display:flex; gap:6px; }
+  input[type=text] { font:inherit; font-size:13px; padding:5px 8px; border-radius:6px; border:1px solid var(--border);
+                     background:var(--bg); color:var(--fg); min-width:260px; font-family:ui-monospace,Menlo,Consolas,monospace; }
+  pre { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; max-height:340px;
+        overflow:auto; font-size:12px; margin:8px 0 0; color:var(--fg); }
+  .warnbox { border-left:4px solid var(--warn); background:var(--warn-bg); color:var(--warn); padding:8px 12px; border-radius:4px; font-size:14px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Passkey RP ID / Public Suffix Test</h1>
+  <p>Calls <code>navigator.credentials.create()</code> and <code>.get()</code> with RP IDs that a conforming
+     WebAuthn implementation must refuse, such as public suffixes (<code>github.io</code>, <code>io</code>,
+     <code>co.uk</code>) and unrelated domains. Use it with your password-manager extension active to see whether
+     the extension enforces the same RP ID rules as the browser.</p>
+
+  <div id="insecure" class="warnbox hidden">
+    This page is not in a secure context. WebAuthn needs HTTPS (or localhost). Open it from its https:// URL.
+  </div>
+
+  <h2>Environment</h2>
+  <div class="card"><dl id="env"></dl></div>
+
+  <h2>How to read results</h2>
+  <ul>
+    <li><b>Expected: reject</b>. A <code>SecurityError</code> (or <code>TypeError</code>) is a PASS. If a credential or assertion is
+        returned, that is a FAIL: the extension (or browser) accepted an RP ID it should not have.</li>
+    <li><code>NotAllowedError</code> is inconclusive. It means a prompt was cancelled or timed out. Watch whether the
+        extension showed a "save passkey for &hellip;" UI for the disallowed RP ID, and retry.</li>
+    <li>For each issued credential the page also checks that <code>rpIdHash</code> in authenticatorData equals SHA-256 of the
+        requested RP ID and that <code>clientDataJSON.origin</code> equals this page's origin.</li>
+    <li>Run <b>Create</b> for the baseline first so <b>Get</b> has a passkey to find. Browsers may require a click for each
+        call, so if "Run all" stops with <code>NotAllowedError</code>, click the rows individually.</li>
+  </ul>
+
+  <h2>Tests</h2>
+  <div class="toolbar">
+    <button class="primary" id="runAllCreate">Run all: Create</button>
+    <button class="primary" id="runAllGet">Run all: Get</button>
+    <button id="clearResults">Clear results</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>RP ID sent</th><th>Expected</th><th>Create</th><th>Get</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <h2>Custom RP ID</h2>
+  <div class="toolbar">
+    <input type="text" id="customRp" placeholder="any rp.id value" spellcheck="false" autocomplete="off">
+    <button id="customCreate">Create</button>
+    <button id="customGet">Get</button>
+  </div>
+  <div id="customOut" class="card hidden"></div>
+
+  <h2>Log</h2>
+  <div class="toolbar">
+    <button id="copyLog">Copy JSON</button>
+    <button id="downloadLog">Download JSON</button>
+  </div>
+  <pre id="log">(no runs yet)</pre>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  // Small subset of the Public Suffix List, enough for the test cases.
+  // Real implementations should use the full list (https://publicsuffix.org).
+  const KNOWN_PUBLIC_SUFFIXES = [
+    'github.io','gitlab.io','netlify.app','pages.dev','vercel.app','herokuapp.com','web.app',
+    'firebaseapp.com','appspot.com','blogspot.com','azurewebsites.net','cloudfront.net',
+    'workers.dev','onrender.com','co.uk','com.au','co.in','co.jp'
+  ];
+  const PS = new Set(KNOWN_PUBLIC_SUFFIXES);
+
+  const host = location.hostname;
+  const labels = host.split('.');
+  const enc = new TextEncoder();
+  const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+  const b64u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  const sha256hex = async s => hex(await crypto.subtle.digest('SHA-256', enc.encode(s)));
+  const $ = id => document.getElementById(id);
+  const el = (tag, props = {}, ...kids) => {
+    const n = document.createElement(tag);
+    Object.entries(props).forEach(([k, v]) => k === 'class' ? n.className = v : n[k] = v);
+    kids.forEach(k => n.append(k));
+    return n;
+  };
+
+  // ---- Environment panel ----
+  function nativeCheck(fn) {
+    try { return Function.prototype.toString.call(fn).includes('[native code]'); } catch { return false; }
+  }
+  const envRows = [
+    ['Origin', location.origin],
+    ['Hostname', host],
+    ['Secure context', String(window.isSecureContext)],
+    ['PublicKeyCredential', String(typeof window.PublicKeyCredential !== 'undefined')],
+    ['credentials.create is native', String(nativeCheck(navigator.credentials && navigator.credentials.create))],
+    ['credentials.get is native', String(nativeCheck(navigator.credentials && navigator.credentials.get))],
+    ['User agent', navigator.userAgent]
+  ];
+  const dl = $('env');
+  envRows.forEach(([k, v]) => { dl.append(el('dt', { textContent: k }), el('dd', { textContent: v })); });
+  if (!window.isSecureContext) $('insecure').classList.remove('hidden');
+  const envNote = el('dd', { textContent: '"false" for native usually means something (often an extension) has replaced the function in the page. That is expected when a passkey-managing extension is active.' });
+  dl.append(el('dt', { textContent: 'Note' }), envNote);
+
+  // ---- Test cases ----
+  function buildCases() {
+    const groups = [];
+    const seen = new Set();
+    const addTo = (g, rpId, expected, note) => {
+      if (seen.has(rpId)) return;
+      seen.add(rpId);
+      g.items.push({ id: 'c' + seen.size, rpId, expected, note });
+    };
+    const g1 = { name: 'Baseline', items: [] };
+    const g2 = { name: 'Parent domains of this host', items: [] };
+    const g3 = { name: 'Public suffixes and unrelated domains', items: [] };
+    const g4 = { name: 'Malformed RP IDs', items: [] };
+
+    addTo(g1, host, 'allow', 'Exact hostname. Must succeed.');
+
+    for (let i = 1; i < labels.length; i++) {
+      const suf = labels.slice(i).join('.');
+      const isTld = (labels.length - i) === 1;
+      const isPs = PS.has(suf) || isTld;
+      addTo(g2, suf, isPs ? 'reject' : 'info',
+        isPs ? 'Public suffix. Spec says it must be refused.'
+             : 'Parent domain. Allowed if it is the registrable domain, so result is informational.');
+    }
+
+    if (labels.length >= 2) {
+      const parent = labels.slice(1).join('.');
+      addTo(g3, 'someone-else.' + parent, 'reject', 'Sibling under the same public suffix. Different site, must be refused.');
+    }
+    ['github.io','io','com','co.uk','gitlab.io','netlify.app','pages.dev','vercel.app','herokuapp.com','example.com']
+      .forEach(s => addTo(g3, s, s === 'example.com' ? 'reject' : 'reject',
+        s === 'example.com' ? 'Unrelated registrable domain.' : 'Public suffix / shared hosting suffix.'));
+    addTo(g3, 'localhost', 'reject', 'Unrelated host.');
+    addTo(g3, '127.0.0.1', 'reject', 'IP address, unrelated to this origin.');
+
+    addTo(g4, 'https://' + host, 'reject', 'Contains a scheme. RP ID must be a bare domain.');
+    addTo(g4, host + ':443', 'reject', 'Contains a port.');
+    addTo(g4, '.' + labels.slice(Math.min(1, labels.length - 1)).join('.'), 'reject', 'Leading dot.');
+    addTo(g4, host + '/', 'reject', 'Trailing slash.');
+    addTo(g4, host.toUpperCase(), 'info', 'Upper-case host. Browsers differ here, so this is informational.');
+    addTo(g4, host + '.', 'info', 'Trailing dot (FQDN form). Informational.');
+    addTo(g4, '', 'info', 'Empty string. Informational.');
+
+    return [g1, g2, g3, g4].filter(g => g.items.length);
+  }
+
+  // ---- WebAuthn option builders ----
+  function createOpts(rpId) {
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const userId = crypto.getRandomValues(new Uint8Array(16));
+    return {
+      challenge,
+      opts: { publicKey: {
+        rp: { id: rpId, name: 'PSL Test RP' },
+        user: { id: userId, name: 'psl-test-' + hex(userId).slice(0, 6), displayName: 'PSL Test User' },
+        challenge,
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+        authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+        attestation: 'none',
+        timeout: 60000
+      } }
+    };
+  }
+  function getOpts(rpId) {
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    return {
+      challenge,
+      opts: { publicKey: { rpId, challenge, userVerification: 'preferred', timeout: 60000 } }
+    };
+  }
+
+  async function inspect(cred, rpId, mode, challenge) {
+    const r = cred.response;
+    const cd = JSON.parse(new TextDecoder().decode(r.clientDataJSON));
+    let ad = null;
+    if (mode === 'create') { if (typeof r.getAuthenticatorData === 'function') ad = r.getAuthenticatorData(); }
+    else ad = r.authenticatorData;
+    const d = {
+      credentialId: cred.id,
+      clientDataType: cd.type,
+      clientDataOrigin: cd.origin,
+      originMatchesPage: cd.origin === location.origin,
+      challengeEchoed: cd.challenge === b64u(challenge)
+    };
+    if (ad) {
+      const rpIdHash = hex(new Uint8Array(ad).slice(0, 32));
+      d.rpIdHash = rpIdHash;
+      d.rpIdHashMatchesRequested = rpIdHash === await sha256hex(rpId);
+      d.rpIdHashMatchesHost = rpIdHash === await sha256hex(host);
+    } else {
+      d.rpIdHash = '(authenticatorData not exposed by this browser)';
+    }
+    return d;
+  }
+
+  function classify(c, o) {
+    if (o.ok) {
+      const d = o.details;
+      const integrity = (d.originMatchesPage === false || d.rpIdHashMatchesRequested === false)
+        ? ' Integrity problem: ' + [d.originMatchesPage === false && 'origin mismatch', d.rpIdHashMatchesRequested === false && 'rpIdHash does not match requested RP ID'].filter(Boolean).join(', ') + '.' : '';
+      if (c.expected === 'reject') return { cls: 'fail', label: 'FAIL', text: 'Issued a credential/assertion for a disallowed RP ID.' + integrity };
+      if (c.expected === 'allow') return { cls: integrity ? 'warn' : 'pass', label: integrity ? 'OK, check' : 'PASS', text: 'Succeeded.' + integrity };
+      return { cls: 'info', label: 'ACCEPTED', text: 'Succeeded (informational case).' + integrity };
+    }
+    const hardReject = ['SecurityError','TypeError','SyntaxError','NotSupportedError','DataError','InvalidCharacterError'];
+    if (o.name === 'NotAllowedError') return { cls: 'warn', label: 'INCONCLUSIVE', text: 'NotAllowedError: cancelled, timed out, or blocked. Retry and watch for an extension prompt.' };
+    if (c.expected === 'allow') return { cls: 'warn', label: 'UNEXPECTED ERROR', text: o.name + ': ' + o.message };
+    if (c.expected === 'reject') return hardReject.includes(o.name)
+      ? { cls: 'pass', label: 'PASS', text: 'Rejected with ' + o.name + '.' }
+      : { cls: 'warn', label: 'REJECTED (other)', text: o.name + ': ' + o.message };
+    return { cls: 'info', label: 'REJECTED', text: o.name + ': ' + o.message };
+  }
+
+  // ---- Running and rendering ----
+  const log = [];
+  function renderLog() { $('log').textContent = log.length ? JSON.stringify(log, null, 2) : '(no runs yet)'; }
+
+  function setCell(cell, v) {
+    cell.replaceChildren(
+      el('span', { class: 'st ' + v.cls, textContent: v.label }),
+      el('small', { textContent: v.text })
+    );
+  }
+
+  async function runTest(c, mode, cell) {
+    if (cell) setCell(cell, { cls: 'running', label: 'RUNNING', text: 'Waiting for the browser or extension…' });
+    let outcome, challenge;
+    try {
+      const { opts, challenge: ch } = mode === 'create' ? createOpts(c.rpId) : getOpts(c.rpId);
+      challenge = ch;
+      const cred = mode === 'create'
+        ? await navigator.credentials.create(opts)
+        : await navigator.credentials.get(opts);
+      if (!cred) throw Object.assign(new Error('null credential returned'), { name: 'NullResult' });
+      outcome = { ok: true, details: await inspect(cred, c.rpId, mode, challenge) };
+    } catch (e) {
+      outcome = { ok: false, name: (e && e.name) || 'Error', message: (e && e.message) || String(e) };
+    }
+    const v = classify(c, outcome);
+    if (cell) setCell(cell, v);
+    log.push({
+      time: new Date().toISOString(), mode, rpId: c.rpId, expected: c.expected,
+      verdict: v.label, summary: v.text,
+      error: outcome.ok ? null : { name: outcome.name, message: outcome.message },
+      details: outcome.ok ? outcome.details : null,
+      origin: location.origin
+    });
+    renderLog();
+    return v;
+  }
+
+  const rows = [];
+  function renderTable() {
+    const tb = $('tbody');
+    tb.replaceChildren();
+    rows.length = 0;
+    buildCases().forEach(g => {
+      tb.append(el('tr', { class: 'group' }, el('td', { colSpan: 5, textContent: g.name })));
+      g.items.forEach(c => {
+        const createCell = el('td', { class: 'res' });
+        const getCell = el('td', { class: 'res' });
+        const row = { c, createCell, getCell };
+        rows.push(row);
+        const rpTd = el('td', { class: 'rp' });
+        rpTd.append(c.rpId === '' ? '(empty string)' : c.rpId, el('span', { class: 'note', textContent: c.note }));
+        tb.append(el('tr', {},
+          rpTd,
+          el('td', {}, el('span', { class: 'badge exp-' + c.expected, textContent: c.expected })),
+          createCell, getCell,
+          el('td', {}, el('div', { class: 'row-actions' },
+            el('button', { textContent: 'Create', onclick: () => runTest(c, 'create', createCell) }),
+            el('button', { textContent: 'Get', onclick: () => runTest(c, 'get', getCell) })
+          ))
+        ));
+      });
+    });
+  }
+
+  async function runAll(mode) {
+    const btns = [$('runAllCreate'), $('runAllGet')];
+    btns.forEach(b => b.disabled = true);
+    for (const r of rows) {
+      const v = await runTest(r.c, mode, mode === 'create' ? r.createCell : r.getCell);
+      if (v.label === 'INCONCLUSIVE') { /* keep going; user may need to click rows individually */ }
+    }
+    btns.forEach(b => b.disabled = false);
+  }
+
+  async function runCustom(mode) {
+    const c = { id: 'custom', rpId: $('customRp').value, expected: 'info', note: 'custom' };
+    const out = $('customOut');
+    out.classList.remove('hidden');
+    const cell = el('div', { class: 'res' });
+    out.replaceChildren(el('div', { textContent: 'RP ID: ' + JSON.stringify(c.rpId) + ' (' + mode + ')' }), cell);
+    await runTest(c, mode, cell);
+  }
+
+  $('runAllCreate').onclick = () => runAll('create');
+  $('runAllGet').onclick = () => runAll('get');
+  $('clearResults').onclick = () => { log.length = 0; renderLog(); renderTable(); $('customOut').classList.add('hidden'); };
+  $('customCreate').onclick = () => runCustom('create');
+  $('customGet').onclick = () => runCustom('get');
+  $('copyLog').onclick = async () => { try { await navigator.clipboard.writeText($('log').textContent); } catch {} };
+  $('downloadLog').onclick = () => {
+    const a = el('a', { href: URL.createObjectURL(new Blob([JSON.stringify(log, null, 2)], { type: 'application/json' })), download: 'passkey-psl-test-log.json' });
+    document.body.append(a); a.click(); a.remove();
+  };
+
+  renderTable();
+})();
+</script>
+</body>
+</html>
