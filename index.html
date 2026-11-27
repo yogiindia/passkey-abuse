@@ -63,6 +63,13 @@
         overflow:auto; font-size:12px; margin:8px 0 0; color:var(--fg); }
   .warnbox { border-left:4px solid var(--warn); background:var(--warn-bg); color:var(--warn); padding:8px 12px; border-radius:4px; font-size:14px; }
   .hidden { display:none; }
+  select { font:inherit; font-size:13px; padding:5px 8px; border-radius:6px; border:1px solid var(--border);
+           background:var(--bg); color:var(--fg); }
+  .mini { font-size:12px; color:var(--muted); }
+  details { margin:8px 0; }
+  summary { cursor:pointer; color:var(--accent); font-size:14px; }
+  #frameStage { min-height:90px; margin-top:12px; }
+  #secOut { white-space:pre-wrap; font-size:13px; }
 </style>
 </head>
 <body>
@@ -112,6 +119,71 @@
     <button id="customGet">Get</button>
   </div>
   <div id="customOut" class="card hidden"></div>
+
+  <h2>Related Origin Requests and secondary RP ID</h2>
+  <p>An RP ID that is not a suffix of this origin is only valid through <b>Related Origin Requests</b>: the browser fetches
+     <code>https://&lt;rpId&gt;/.well-known/webauthn</code> and accepts the RP ID only if this page's origin is listed there.
+     An extension that skips that check must not hand out credentials for such an RP ID. This field is also "RP B" for the
+     cross-RP tests below, so use either a parent domain you control (when this page is on a custom domain) or a related-origin domain
+     whose file you can edit. Browsers also cap how many distinct sites the file may list (about five).</p>
+  <div class="toolbar">
+    <input type="text" id="secRp" placeholder="secondary RP ID, e.g. example.com" spellcheck="false" autocomplete="off">
+    <label class="mini">Expected:
+      <select id="secExpect">
+        <option value="info">Informational</option>
+        <option value="allow">Allowed (valid parent, or this origin is listed)</option>
+        <option value="reject">Must be rejected (not listed / unreachable)</option>
+      </select>
+    </label>
+    <button id="secCreate">Create</button>
+    <button id="secGet">Get</button>
+    <button id="secCheck">Check .well-known/webauthn</button>
+  </div>
+  <div id="secOut" class="card hidden"></div>
+  <details>
+    <summary>JSON to host on the related domain (positive test)</summary>
+    <pre id="rorJson"></pre>
+    <p class="mini">Serve it at <code>/.well-known/webauthn</code> on the secondary domain, with no redirects and
+       <code>Content-Type: application/json</code>. Some static hosts (GitHub Pages included) may serve extensionless files as
+       <code>application/octet-stream</code>, in which case use a host where you can set headers. For the negative test, host a
+       file that omits this origin, or no file at all, and set Expected to "Must be rejected".</p>
+  </details>
+
+  <h2>Cross-RP credential tests (allowCredentials / excludeCredentials)</h2>
+  <p>A credential ID belongs to exactly one RP. An authenticator must ignore IDs bound to another RP, and it must validate the
+     RP ID before it looks at <code>allowCredentials</code> or <code>excludeCredentials</code>. An extension that matches by
+     credential ID alone would use a passkey for the wrong RP, or reveal that a passkey exists for another site
+     (<code>InvalidStateError</code> where none is expected). Create a credential for RP A (this host) first. Tests that involve a second
+     RP also need RP B from the section above.</p>
+  <div class="toolbar">
+    <button id="mkA">1. Create credential for RP A</button>
+    <button id="mkB">2. Create credential for RP B</button>
+    <span class="mini" id="credState"></span>
+  </div>
+  <div class="toolbar"><button class="primary" id="runAllX">Run all cross-RP tests</button></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Test</th><th>Expected</th><th>Result</th><th></th></tr></thead>
+      <tbody id="xbody"></tbody>
+    </table>
+  </div>
+
+  <h2>Iframe tests</h2>
+  <p>Checks that the extension respects the same boundaries as the browser inside frames. A sandboxed frame has an opaque origin and
+     must not get any RP ID. A cross-origin frame needs delegation through the <code>allow</code> attribute (Permissions Policy), and its RP ID must be
+     valid for the frame's own origin, not the embedding page's. Browsers need a click inside the frame, so each test opens a frame
+     and you press the button shown in it.</p>
+  <div class="toolbar">
+    <input type="text" id="frameUrl" style="min-width:440px" spellcheck="false" autocomplete="off"
+           placeholder="URL of this same page hosted on a different origin (for the cross-origin tests)">
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Test</th><th>Expected</th><th>Result</th><th></th></tr></thead>
+      <tbody id="fbody"></tbody>
+    </table>
+  </div>
+  <div id="frameStage" class="card"><span class="mini">The active test frame appears here.</span></div>
 
   <h2>Log</h2>
   <div class="toolbar">
@@ -271,6 +343,11 @@
       if (c.expected === 'allow') return { cls: integrity ? 'warn' : 'pass', label: integrity ? 'OK, check' : 'PASS', text: 'Succeeded.' + integrity };
       return { cls: 'info', label: 'ACCEPTED', text: 'Succeeded (informational case).' + integrity };
     }
+    if (o.name === 'NotAllowedError' && /permissions? policy|feature policy|not enabled in this document/i.test(o.message || '')) {
+      return c.expected === 'reject'
+        ? { cls: 'pass', label: 'PASS', text: 'Blocked by Permissions Policy: ' + o.message }
+        : { cls: 'warn', label: 'BLOCKED', text: 'Blocked by Permissions Policy: ' + o.message };
+    }
     const hardReject = ['SecurityError','TypeError','SyntaxError','NotSupportedError','DataError','InvalidCharacterError'];
     if (o.name === 'NotAllowedError') return { cls: 'warn', label: 'INCONCLUSIVE', text: 'NotAllowedError: cancelled, timed out, or blocked. Retry and watch for an extension prompt.' };
     if (c.expected === 'allow') return { cls: 'warn', label: 'UNEXPECTED ERROR', text: o.name + ': ' + o.message };
@@ -375,6 +452,443 @@
     document.body.append(a); a.click(); a.remove();
   };
 
+  // ============================================================
+  // Frame-mode runner. Also serialized into srcdoc iframes, so it
+  // must not reference anything outside its own body.
+  // ============================================================
+  function frameRunner() {
+    const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+    const b64u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    document.body.replaceChildren();
+    document.body.style.cssText = 'margin:8px;font:13px system-ui,sans-serif;background:#fff;color:#111';
+    const info = document.createElement('div');
+    info.textContent = 'Frame origin: ' + location.origin + ' · waiting for the parent page…';
+    const btn = document.createElement('button');
+    btn.textContent = 'Run test inside iframe';
+    btn.disabled = true;
+    btn.style.cssText = 'margin-top:8px;padding:6px 12px;font-size:13px';
+    document.body.append(info, btn);
+    let cmd = null;
+    window.addEventListener('message', e => {
+      if (e.source !== window.parent) return;
+      const m = e.data;
+      if (!m || m.type !== 'psl-run') return;
+      cmd = m;
+      info.textContent = 'Frame origin: ' + location.origin + ' · ' + m.mode + ' · rpId = ' +
+        (m.omitRpId ? '(omitted)' : JSON.stringify(m.rpId === '$self' ? location.hostname : m.rpId));
+      btn.disabled = false;
+    });
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      window.focus();
+      const rpId = cmd.rpId === '$self' ? location.hostname : cmd.rpId;
+      const out = { type: 'psl-result', id: cmd.id, frameOrigin: location.origin };
+      try {
+        const challenge = crypto.getRandomValues(new Uint8Array(32));
+        let cred;
+        if (cmd.mode === 'create') {
+          const uid = crypto.getRandomValues(new Uint8Array(16));
+          const pk = {
+            rp: { name: 'PSL Test RP' },
+            user: { id: uid, name: 'psl-frame-' + hex(uid).slice(0, 6), displayName: 'PSL Frame User' },
+            challenge,
+            pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+            authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+            attestation: 'none',
+            timeout: 60000
+          };
+          if (!cmd.omitRpId) pk.rp.id = rpId;
+          cred = await navigator.credentials.create({ publicKey: pk });
+        } else {
+          const pk = { challenge, userVerification: 'preferred', timeout: 60000 };
+          if (!cmd.omitRpId) pk.rpId = rpId;
+          cred = await navigator.credentials.get({ publicKey: pk });
+        }
+        if (!cred) throw new Error('null credential returned');
+        const r = cred.response;
+        const cd = JSON.parse(new TextDecoder().decode(r.clientDataJSON));
+        const d = {
+          credentialId: cred.id,
+          clientDataOrigin: cd.origin,
+          originMatchesPage: cd.origin === location.origin,
+          challengeEchoed: cd.challenge === b64u(challenge)
+        };
+        const ad = cmd.mode === 'create' ? (r.getAuthenticatorData ? r.getAuthenticatorData() : null) : r.authenticatorData;
+        if (ad && window.crypto && window.crypto.subtle) {
+          const h = hex(new Uint8Array(ad).slice(0, 32));
+          const want = hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cmd.omitRpId ? location.hostname : rpId)));
+          d.rpIdHash = h;
+          d.rpIdHashMatchesRequested = h === want;
+        }
+        out.ok = true;
+        out.details = d;
+      } catch (err) {
+        out.ok = false;
+        out.name = (err && err.name) || 'Error';
+        out.message = (err && err.message) || String(err);
+      }
+      info.textContent += ' · done: ' + (out.ok ? 'credential returned' : out.name);
+      window.parent.postMessage(out, '*');
+    });
+    window.parent.postMessage({ type: 'psl-ready' }, '*');
+  }
+
+  // When this page is loaded inside another page with ?role=frame it only acts as a test runner.
+  if (window !== window.top && /[?&]role=frame(&|$)/.test(location.search)) {
+    frameRunner();
+    return;
+  }
+
+  // ============================================================
+  // Secondary RP ID / Related Origin Requests
+  // ============================================================
+  const parentDomain = labels.slice(1).join('.');
+  const PSX = labels.length === 1 ? 'com' : (PS.has(parentDomain) ? parentDomain : labels[labels.length - 1]);
+  const SIBLING = 'someone-else.' + (labels.length === 1 ? 'example.com' : PSX);
+  const sec = () => $('secRp').value.trim();
+  if (labels.length >= 3 && !PS.has(parentDomain)) $('secRp').value = parentDomain;
+  $('rorJson').textContent = JSON.stringify({ origins: [location.origin] }, null, 2);
+
+  async function runSecondary(mode) {
+    const out = $('secOut');
+    out.classList.remove('hidden');
+    if (!sec()) { out.textContent = 'Enter a secondary RP ID first.'; return; }
+    const c = { id: 'secondary', rpId: sec(), expected: $('secExpect').value, note: 'secondary RP ID' };
+    const cell = el('div', { class: 'res' });
+    out.replaceChildren(el('div', { textContent: 'RP ID: ' + JSON.stringify(c.rpId) + ' (' + mode + ', expected ' + c.expected + ')' }), cell);
+    await runTest(c, mode, cell);
+  }
+
+  async function checkWellKnown() {
+    const out = $('secOut');
+    out.classList.remove('hidden');
+    const rp = sec();
+    if (!rp) { out.textContent = 'Enter a secondary RP ID first.'; return; }
+    const url = 'https://' + rp + '/.well-known/webauthn';
+    const lines = ['GET ' + url];
+    try {
+      const r = await fetch(url, { cache: 'no-store', redirect: 'manual' });
+      if (r.type === 'opaqueredirect') {
+        lines.push('Redirect response. Browsers do not follow redirects for this file, so Related Origin Requests would fail.');
+      } else {
+        lines.push('Status: ' + r.status, 'Content-Type: ' + (r.headers.get('content-type') || '(none)'));
+        const text = await r.text();
+        try {
+          const j = JSON.parse(text);
+          const list = Array.isArray(j.origins) ? j.origins : null;
+          lines.push(list
+            ? 'origins: ' + list.length + ' entries. Lists this origin (' + location.origin + '): ' + list.includes(location.origin)
+            : 'JSON has no "origins" array.');
+        } catch { lines.push('Body is not valid JSON.'); }
+      }
+    } catch (e) {
+      lines.push('Fetch failed: ' + e.name + ': ' + e.message,
+        'This is usually CORS or a network error. The browser\'s own Related Origin fetch is not subject to CORS, so also check with curl.');
+    }
+    out.textContent = lines.join('\n');
+  }
+
+  // ============================================================
+  // Cross-RP tests
+  // ============================================================
+  const creds = {};
+  const REJ = ['SecurityError', 'TypeError', 'SyntaxError', 'NotSupportedError', 'DataError', 'InvalidCharacterError'];
+  const V = (cls, label, text) => ({ cls, label, text });
+  const integ = d => d ? [d.originMatchesPage === false && 'origin mismatch',
+    d.rpIdHashMatchesRequested === false && 'rpIdHash differs from the requested RP ID'].filter(Boolean).join(', ') : '';
+  const J = {
+    allow: o => {
+      if (o.ok) { const n = integ(o.details); return n ? V('warn', 'OK, CHECK', 'Succeeded but: ' + n + '.') : V('pass', 'PASS', 'Succeeded.'); }
+      if (o.name === 'InvalidStateError') return V('fail', 'FAIL', 'InvalidStateError: a credential bound to a different RP matched by ID (cross-RP existence leak).');
+      if (o.name === 'NotAllowedError') return V('warn', 'INCONCLUSIVE', 'NotAllowedError: cancelled, timed out or blocked. Retry.');
+      return V('warn', 'UNEXPECTED ERROR', o.name + ': ' + o.message);
+    },
+    reject: o => {
+      if (o.ok) return V('fail', 'FAIL', 'Issued a credential/assertion although this RP ID / credential ID combination must not match.');
+      if (o.name === 'InvalidStateError') return V('fail', 'FAIL', 'InvalidStateError: excludeCredentials matched by credential ID alone (existence leak, RP ID not validated first).');
+      if (REJ.includes(o.name)) return V('pass', 'PASS', 'Rejected with ' + o.name + '.');
+      if (o.name === 'NotAllowedError') return V('warn', 'INCONCLUSIVE', 'NotAllowedError: either "no matching credential" or a cancelled prompt. Check whether the extension offered a credential from another RP.');
+      return V('warn', 'REJECTED (other)', o.name + ': ' + o.message);
+    },
+    excludeSame: o => {
+      if (!o.ok && o.name === 'InvalidStateError') return V('pass', 'PASS', 'InvalidStateError: excludeCredentials honoured.');
+      if (o.ok) return V('warn', 'WARN', 'Created a duplicate credential: excludeCredentials was ignored.');
+      if (o.name === 'NotAllowedError') return V('warn', 'INCONCLUSIVE', 'NotAllowedError: cancelled or timed out. Retry.');
+      return V('warn', 'UNEXPECTED ERROR', o.name + ': ' + o.message);
+    },
+    disc: (self, other) => o => {
+      if (o.ok) {
+        const id = o.details.credentialId;
+        if (creds[other] && id === creds[other].id) return V('fail', 'FAIL', 'Returned the credential created for RP ' + other + ' while asking for RP ' + self + '.');
+        if (creds[self] && id === creds[self].id) return V('pass', 'PASS', 'Returned the credential created for this RP.');
+        return V('info', 'RETURNED', 'Returned a credential that was not created by this page. Confirm in the extension UI which RP it belongs to.');
+      }
+      if (o.name === 'NotAllowedError') return V('warn', 'INCONCLUSIVE', 'NotAllowedError: cancelled, timed out or no credential offered.');
+      return V('warn', 'UNEXPECTED ERROR', o.name + ': ' + o.message);
+    }
+  };
+
+  const A = () => host;
+  const B = () => sec();
+  const xCases = [
+    { id: 'x1', mode: 'get', title: 'get · rpId = A · allowCredentials [A]', note: 'Baseline. Must succeed.',
+      expected: 'allow', needs: ['A'], rp: A, allow: ['A'], judge: J.allow },
+    { id: 'x2', mode: 'create', title: 'create · rpId = A · excludeCredentials [A]', note: 'Same RP, so the exclusion must apply.',
+      expected: 'exclude', needs: ['A'], rp: A, exclude: ['A'], judge: J.excludeSame },
+    { id: 'x3', mode: 'get', title: 'get · rpId = ' + PSX + ' (public suffix) · allowCredentials [A]', note: 'Invalid RP ID must be rejected before any credential lookup.',
+      expected: 'reject', needs: ['A'], rp: () => PSX, allow: ['A'], judge: J.reject },
+    { id: 'x4', mode: 'get', title: 'get · rpId = ' + SIBLING + ' · allowCredentials [A]', note: 'Unrelated RP ID, same credential ID.',
+      expected: 'reject', needs: ['A'], rp: () => SIBLING, allow: ['A'], judge: J.reject },
+    { id: 'x5', mode: 'create', title: 'create · rpId = ' + PSX + ' (public suffix) · excludeCredentials [A]', note: 'Expect SecurityError. InvalidStateError means the exclude list was matched first and leaks that A exists.',
+      expected: 'reject', needs: ['A'], rp: () => PSX, exclude: ['A'], judge: J.reject },
+    { id: 'x6', mode: 'create', title: 'create · rpId = ' + SIBLING + ' · excludeCredentials [A]', note: 'Same check with an unrelated RP ID.',
+      expected: 'reject', needs: ['A'], rp: () => SIBLING, exclude: ['A'], judge: J.reject },
+    { id: 'x7', mode: 'get', title: 'get · rpId = B · allowCredentials [A]', note: 'Credential A is bound to RP A, so it must not be usable for B.',
+      expected: 'reject', needs: ['A', 'B'], rp: B, allow: ['A'], judge: J.reject },
+    { id: 'x8', mode: 'get', title: 'get · rpId = A · allowCredentials [B]', note: 'Credential B is bound to RP B, so it must not be usable for A.',
+      expected: 'reject', needs: ['A', 'B'], rp: A, allow: ['B'], judge: J.reject },
+    { id: 'x9', mode: 'create', title: 'create · rpId = A · excludeCredentials [B]', note: 'A credential for another RP must not block creation.',
+      expected: 'allow', needs: ['A', 'B'], rp: A, exclude: ['B'], judge: J.allow },
+    { id: 'x10', mode: 'create', title: 'create · rpId = B · excludeCredentials [A]', note: 'Same check in the other direction.',
+      expected: 'allow', needs: ['A', 'B'], rp: B, exclude: ['A'], judge: J.allow },
+    { id: 'x11', mode: 'get', title: 'get · rpId = B · allowCredentials [B]', note: 'Baseline for RP B. Must succeed.',
+      expected: 'allow', needs: ['B'], rp: B, allow: ['B'], judge: J.allow },
+    { id: 'x12', mode: 'get', title: 'get · rpId = A · no allowCredentials', note: 'Pick a passkey in the UI. Only RP A passkeys should be offered.',
+      expected: 'info', needs: ['A', 'B'], rp: A, judge: J.disc('A', 'B') },
+    { id: 'x13', mode: 'get', title: 'get · rpId = B · no allowCredentials', note: 'Pick a passkey in the UI. Only RP B passkeys should be offered.',
+      expected: 'info', needs: ['A', 'B'], rp: B, judge: J.disc('B', 'A') }
+  ];
+  const expLabel = { allow: 'allow', reject: 'reject', exclude: 'InvalidStateError', info: 'info' };
+  const expClass = { allow: 'allow', reject: 'reject', exclude: 'info', info: 'info' };
+
+  const descOf = k => ({ type: 'public-key', id: creds[k].raw });
+  function buildX(c, challenge) {
+    const rpId = c.rp();
+    if (c.mode === 'get') {
+      const pk = { rpId, challenge, userVerification: 'preferred', timeout: 60000 };
+      if (c.allow && c.allow.length) pk.allowCredentials = c.allow.map(descOf);
+      return { publicKey: pk };
+    }
+    const uid = crypto.getRandomValues(new Uint8Array(16));
+    const pk = {
+      rp: { id: rpId, name: 'PSL Test RP' },
+      user: { id: uid, name: 'psl-test-' + hex(uid).slice(0, 6), displayName: 'PSL Test User' },
+      challenge,
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+      attestation: 'none',
+      timeout: 60000
+    };
+    if (c.exclude && c.exclude.length) pk.excludeCredentials = c.exclude.map(descOf);
+    return { publicKey: pk };
+  }
+
+  function credStateText() {
+    const f = k => creds[k] ? '✓ ' + creds[k].id.slice(0, 10) + '… (' + creds[k].rpId + ')' : '✗ not created';
+    $('credState').textContent = 'A: ' + f('A') + '   B: ' + f('B');
+  }
+
+  async function mkCred(key) {
+    const rpId = key === 'A' ? host : sec();
+    const st = $('credState');
+    if (!rpId) { st.textContent = 'Enter a secondary RP ID in the section above first.'; return; }
+    const c = { id: 'mk' + key, rpId, expected: key === 'A' ? 'allow' : $('secExpect').value, note: 'credential ' + key };
+    st.textContent = 'Creating credential ' + key + ' for ' + rpId + '…';
+    const { opts, challenge } = createOpts(rpId);
+    let o;
+    try {
+      const cred = await navigator.credentials.create(opts);
+      o = { ok: true, details: await inspect(cred, rpId, 'create', challenge) };
+      creds[key] = { id: cred.id, raw: new Uint8Array(cred.rawId), rpId };
+    } catch (e) {
+      o = { ok: false, name: (e && e.name) || 'Error', message: (e && e.message) || String(e) };
+      delete creds[key];
+    }
+    const v = classify(c, o);
+    log.push({ time: new Date().toISOString(), group: 'cross-rp-setup', mode: 'create', rpId, expected: c.expected,
+      verdict: v.label, summary: v.text, error: o.ok ? null : { name: o.name, message: o.message },
+      details: o.ok ? o.details : null, origin: location.origin });
+    renderLog();
+    credStateText();
+    if (!o.ok) $('credState').textContent += '   ' + key + ' failed: ' + o.name + ': ' + o.message;
+  }
+
+  async function runX(c, cell) {
+    const missing = c.needs.filter(k => k === 'B' ? !(creds.B && sec()) : !creds[k]);
+    if (missing.length) {
+      setCell(cell, V('info', 'SKIPPED', 'Needs credential ' + missing.join(' and ') + '. Use the buttons above first.'));
+      return;
+    }
+    setCell(cell, V('running', 'RUNNING', 'Waiting for the browser or extension…'));
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    let o;
+    try {
+      const opts = buildX(c, challenge);
+      const cred = c.mode === 'get' ? await navigator.credentials.get(opts) : await navigator.credentials.create(opts);
+      if (!cred) throw Object.assign(new Error('null credential returned'), { name: 'NullResult' });
+      o = { ok: true, details: await inspect(cred, c.rp(), c.mode, challenge) };
+    } catch (e) {
+      o = { ok: false, name: (e && e.name) || 'Error', message: (e && e.message) || String(e) };
+    }
+    const v = c.judge(o);
+    setCell(cell, v);
+    log.push({ time: new Date().toISOString(), group: 'cross-rp', mode: c.mode, test: c.title, rpId: c.rp(), expected: c.expected,
+      verdict: v.label, summary: v.text, error: o.ok ? null : { name: o.name, message: o.message },
+      details: o.ok ? o.details : null, origin: location.origin });
+    renderLog();
+  }
+
+  const xRows = [];
+  function renderX() {
+    const tb = $('xbody');
+    tb.replaceChildren();
+    xRows.length = 0;
+    xCases.forEach(c => {
+      const cell = el('td', { class: 'res' });
+      xRows.push({ c, cell });
+      tb.append(el('tr', {},
+        el('td', {}, el('b', { textContent: c.title }), el('span', { class: 'note', textContent: c.note })),
+        el('td', {}, el('span', { class: 'badge exp-' + expClass[c.expected], textContent: expLabel[c.expected] })),
+        cell,
+        el('td', {}, el('button', { textContent: 'Run', onclick: () => runX(c, cell) }))
+      ));
+    });
+  }
+
+  // ============================================================
+  // Iframe tests
+  // ============================================================
+  const FRAME_DOC = '<!doctype html><meta charset="utf-8"><body><script>(' + frameRunner.toString() + ')()<\/script></body>';
+  const frameUrlInput = $('frameUrl');
+
+  function frameCases() {
+    let fh = '';
+    try { fh = new URL(frameUrlInput.value.trim()).hostname; } catch {}
+    const related = !!fh && (fh === host || fh.endsWith('.' + host));
+    return [
+      { id: 'f1', kind: 'sandbox', mode: 'create', rpId: host, expected: 'reject',
+        title: 'Sandboxed iframe (opaque origin): create, rpId = this host',
+        note: 'sandbox="allow-scripts" without allow-same-origin. Must fail.' },
+      { id: 'f2', kind: 'sandbox', mode: 'get', rpId: host, expected: 'reject',
+        title: 'Sandboxed iframe (opaque origin): get, rpId = this host',
+        note: 'Must fail.' },
+      { id: 'f3', kind: 'sandbox', mode: 'create', rpId: host, omitRpId: true, expected: 'reject',
+        title: 'Sandboxed iframe (opaque origin): create, rpId omitted',
+        note: 'The default RP ID would come from an opaque origin. Must fail.' },
+      { id: 'f4', kind: 'same', mode: 'create', rpId: host, expected: 'allow',
+        title: 'Same-origin srcdoc iframe: create, rpId = this host',
+        note: 'Baseline. The extension must also work inside frames.' },
+      { id: 'f5', kind: 'same', mode: 'get', rpId: host, expected: 'allow',
+        title: 'Same-origin srcdoc iframe: get, rpId = this host',
+        note: 'Needs a passkey for this host (create one above first).' },
+      { id: 'x1', kind: 'cross', allow: true, mode: 'create', rpId: '$self', expected: 'allow',
+        title: 'Cross-origin iframe with allow attribute: create, rpId = frame host',
+        note: 'Delegated, RP ID valid for the frame origin.' },
+      { id: 'x2', kind: 'cross', allow: true, mode: 'get', rpId: '$self', expected: 'allow',
+        title: 'Cross-origin iframe with allow attribute: get, rpId = frame host',
+        note: 'Needs a passkey for the frame host (run the create test first).' },
+      { id: 'x3', kind: 'cross', allow: true, mode: 'create', rpId: host, expected: related ? 'info' : 'reject',
+        title: 'Cross-origin iframe with allow attribute: create, rpId = embedding page host',
+        note: 'The RP ID belongs to the embedder, not the frame origin, so it must fail unless the frame host is a subdomain of it.' },
+      { id: 'x4', kind: 'cross', allow: false, mode: 'create', rpId: '$self', expected: 'reject',
+        title: 'Cross-origin iframe without allow attribute: create, rpId = frame host',
+        note: 'Blocked by Permissions Policy. Behaviour differs between browsers.' },
+      { id: 'x5', kind: 'cross', allow: false, mode: 'get', rpId: '$self', expected: 'reject',
+        title: 'Cross-origin iframe without allow attribute: get, rpId = frame host',
+        note: 'Same, for get().' }
+    ];
+  }
+
+  function frameCall(c, url) {
+    return new Promise(resolve => {
+      const stage = $('frameStage');
+      const id = 'r' + Math.random().toString(16).slice(2);
+      const f = document.createElement('iframe');
+      f.title = c.title;
+      f.style.cssText = 'width:100%;height:140px;border:1px solid var(--border);border-radius:6px;background:#fff';
+      let target = '*';
+      if (c.kind === 'sandbox') { f.setAttribute('sandbox', 'allow-scripts'); f.srcdoc = FRAME_DOC; }
+      else if (c.kind === 'same') { f.srcdoc = FRAME_DOC; }
+      else {
+        f.src = url.href;
+        target = url.origin;
+        if (c.allow) f.setAttribute('allow', 'publickey-credentials-create *; publickey-credentials-get *');
+      }
+      let timer;
+      const finish = r => { window.removeEventListener('message', onMsg); clearTimeout(timer); resolve(r); };
+      function onMsg(e) {
+        if (e.source !== f.contentWindow) return;
+        const m = e.data || {};
+        if (m.type === 'psl-ready') {
+          f.contentWindow.postMessage({ type: 'psl-run', id, mode: c.mode, rpId: c.rpId, omitRpId: !!c.omitRpId }, target);
+        } else if (m.type === 'psl-result' && m.id === id) {
+          finish({ frameOrigin: m.frameOrigin, o: m.ok ? { ok: true, details: m.details } : { ok: false, name: m.name, message: m.message } });
+        }
+      }
+      window.addEventListener('message', onMsg);
+      timer = setTimeout(() => finish({ frameOrigin: '', o: { ok: false, name: 'FrameTimeout',
+        message: 'No result within 2 minutes (frame did not load, was blocked from embedding, or the button was not clicked).' } }), 120000);
+      stage.replaceChildren(el('div', { class: 'mini', textContent: c.title }), f);
+    });
+  }
+
+  async function runFrameCase(c, cell) {
+    let url = null;
+    if (c.kind === 'cross') {
+      try {
+        url = new URL(frameUrlInput.value.trim());
+        if (url.origin === location.origin) throw new Error('same-origin');
+        url.searchParams.set('role', 'frame');
+      } catch (e) {
+        setCell(cell, V('info', 'SKIPPED', e.message === 'same-origin'
+          ? 'The frame URL has the same origin as this page. Use a different origin.'
+          : 'Enter the URL of this page hosted on a different origin above.'));
+        return;
+      }
+    }
+    setCell(cell, V('running', 'RUNNING', 'Click "Run test inside iframe" in the frame below.'));
+    const { frameOrigin, o } = await frameCall(c, url);
+    const v = classify({ expected: c.expected, rpId: c.rpId }, o);
+    const text = v.text + (frameOrigin ? ' [frame origin: ' + frameOrigin + ']' : '');
+    setCell(cell, V(v.cls, v.label, text));
+    log.push({ time: new Date().toISOString(), group: 'iframe', mode: c.mode, test: c.title, rpId: c.omitRpId ? '(omitted)' : c.rpId,
+      expected: c.expected, verdict: v.label, summary: text, error: o.ok ? null : { name: o.name, message: o.message },
+      details: o.ok ? o.details : null, frameOrigin, origin: location.origin });
+    renderLog();
+  }
+
+  function renderF() {
+    const tb = $('fbody');
+    tb.replaceChildren();
+    frameCases().forEach(c => {
+      const cell = el('td', { class: 'res' });
+      tb.append(el('tr', {},
+        el('td', {}, el('b', { textContent: c.title }), el('span', { class: 'note', textContent: c.note })),
+        el('td', {}, el('span', { class: 'badge exp-' + c.expected, textContent: c.expected })),
+        cell,
+        el('td', {}, el('button', { textContent: 'Open frame', onclick: () => runFrameCase(c, cell) }))
+      ));
+    });
+  }
+  frameUrlInput.addEventListener('change', renderF);
+
+  // ---- Wiring ----
+  $('secCreate').onclick = () => runSecondary('create');
+  $('secGet').onclick = () => runSecondary('get');
+  $('secCheck').onclick = checkWellKnown;
+  $('mkA').onclick = () => mkCred('A');
+  $('mkB').onclick = () => mkCred('B');
+  $('runAllX').onclick = async () => {
+    const b = $('runAllX');
+    b.disabled = true;
+    for (const r of xRows) await runX(r.c, r.cell);
+    b.disabled = false;
+  };
+  $('clearResults').addEventListener('click', () => { renderX(); renderF(); $('secOut').classList.add('hidden'); });
+
+  credStateText();
+  renderX();
+  renderF();
   renderTable();
 })();
 </script>
